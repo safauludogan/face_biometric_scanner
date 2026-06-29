@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Remove-Item -Recurse -Force \"C:/WORK/code/java/FaceBiometricScanner/app/src/main/java/com/example\" -ErrorAction SilentlyContinue)",
+      "Bash(Remove-Item -Force \"C:/WORK/code/java/FaceBiometricScanner/app/src/androidTest/java/com/example/facebiometricscanner/ExampleInstrumentedTest.kt\" -ErrorAction SilentlyContinue)",
+      "Bash(Remove-Item -Force \"C:/WORK/code/java/FaceBiometricScanner/app/src/test/java/com/example/facebiometricscanner/ExampleUnitTest.kt\" -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-ChildItem -Recurse -Path \"C:\\\\WORK\\\\code\\\\java\\\\FaceBiometricScanner\\\\app\\\\src\\\\main\\\\java\" | Where-Object { !$_.PSIsContainer } | Select-Object FullName)",
+      "PowerShell(Get-ChildItem -Recurse -Path \"C:\\\\WORK\\\\code\\\\java\\\\FaceBiometricScanner\\\\app\\\\src\\\\main\\\\java\\\\com\\\\company\\\\facelogin\" | Where-Object { !$_.PSIsContainer } | Select-Object FullName)",
+      "PowerShell(New-Item *)",
+      "PowerShell($aar = Get-ChildItem -Recurse \"C:\\\\Users\\\\sulud\\\\.gradle\\\\caches\" -Filter \"tensorflow-lite-2.14.0.aar\" -ErrorAction SilentlyContinue | Select-Object -First 1; if \\($aar\\) { $aar.FullName } else { \"Not found\" })"
+    ]
+  }
+}
