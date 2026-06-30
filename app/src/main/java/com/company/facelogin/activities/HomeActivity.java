@@ -43,7 +43,9 @@ public class HomeActivity extends AppCompatActivity {
 
         String fullName = sessionManager.getFirstName() + " " + sessionManager.getLastName();
         ((TextView) findViewById(R.id.tvWelcome)).setText("Hoş geldin,\n" + fullName);
-        ((Button)   findViewById(R.id.btnLogout)).setOnClickListener(v -> logout());
+        ((Button) findViewById(R.id.btnScanFace)).setOnClickListener(v ->
+                startActivity(new Intent(this, FaceIdentificationActivity.class)));
+        ((Button) findViewById(R.id.btnLogout)).setOnClickListener(v -> logout());
     }
 
     @Override

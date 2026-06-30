@@ -26,6 +26,7 @@
         <activity android:name=".activities.RegisterInfoActivity" />
         <activity android:name=".activities.FaceVerificationActivity" />
         <activity android:name=".activities.HomeActivity" />
+        <activity android:name=".activities.FaceIdentificationActivity" />
 
         <!-- Download ML Kit face detection model at install time for offline use -->
         <meta-data
