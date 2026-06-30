@@ -48,6 +48,7 @@ public class FaceVerificationActivity extends AppCompatActivity {
 
     private static final String TAG           = "FaceVerification";
     private static final String TAG_EMBEDDING = "FACE_EMBEDDING";
+    private static final int    MIN_FACE_FRAMES = 6;
 
     // Views
     private PreviewView previewView;
@@ -68,6 +69,7 @@ public class FaceVerificationActivity extends AppCompatActivity {
     private long          selectedUserId = -1;
     private volatile User selectedUser;
     private volatile boolean verified = false;
+    private int              faceLikeFrames = 0;
 
     // ── Permission launcher ───────────────────────────────────────────────────
 
@@ -113,7 +115,8 @@ public class FaceVerificationActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        verified = false;
+        verified        = false;
+        faceLikeFrames  = 0;
         updateStatusText("Yüzünüzü kameraya bakın");
         analysisExecutor.execute(() -> selectedUser = userDao.getUserById(selectedUserId));
     }
@@ -212,10 +215,12 @@ public class FaceVerificationActivity extends AppCompatActivity {
         if (verified) return;
 
         if (faces.isEmpty()) {
+            faceLikeFrames = 0;
             updateStatusText("Yüz bulunamadı");
             return;
         }
         if (faces.size() > 1) {
+            faceLikeFrames = 0;
             updateStatusText("Birden fazla yüz bulundu");
             return;
         }
@@ -223,7 +228,14 @@ public class FaceVerificationActivity extends AppCompatActivity {
         Face face = faces.get(0);
 
         if (!isFaceLike(face)) {
+            faceLikeFrames = 0;
             updateStatusText("Yüzünüzü kameraya bakın");
+            return;
+        }
+
+        faceLikeFrames++;
+        if (faceLikeFrames < MIN_FACE_FRAMES) {
+            updateStatusText("Yüz algılandı");
             return;
         }
 
@@ -238,13 +250,31 @@ public class FaceVerificationActivity extends AppCompatActivity {
     // ── Face validity (anti-spoofing) ─────────────────────────────────────────
 
     private boolean isFaceLike(Face face) {
-        Float leftEye  = face.getLeftEyeOpenProbability();
-        Float rightEye = face.getRightEyeOpenProbability();
-        if (leftEye == null || rightEye == null)  return false;
-        if (Math.max(leftEye, rightEye) < 0.05f) return false;
-        if (face.getLandmark(FaceLandmark.NOSE_BASE) == null) return false;
-        if (face.getLandmark(FaceLandmark.LEFT_EYE)  == null) return false;
-        if (face.getLandmark(FaceLandmark.RIGHT_EYE) == null) return false;
+        Float leftEyeProb  = face.getLeftEyeOpenProbability();
+        Float rightEyeProb = face.getRightEyeOpenProbability();
+        if (leftEyeProb == null || rightEyeProb == null)  return false;
+        if (Math.max(leftEyeProb, rightEyeProb) < 0.1f) return false;
+
+        if (face.getSmilingProbability() == null) return false;
+
+        FaceLandmark noseBase   = face.getLandmark(FaceLandmark.NOSE_BASE);
+        FaceLandmark leftEye    = face.getLandmark(FaceLandmark.LEFT_EYE);
+        FaceLandmark rightEye   = face.getLandmark(FaceLandmark.RIGHT_EYE);
+        FaceLandmark mouthLeft  = face.getLandmark(FaceLandmark.MOUTH_LEFT);
+        FaceLandmark mouthRight = face.getLandmark(FaceLandmark.MOUTH_RIGHT);
+        if (noseBase == null || leftEye == null || rightEye == null
+                || mouthLeft == null || mouthRight == null) return false;
+
+        float eyeMidY   = (leftEye.getPosition().y + rightEye.getPosition().y) / 2f;
+        float noseY     = noseBase.getPosition().y;
+        float mouthMidY = (mouthLeft.getPosition().y + mouthRight.getPosition().y) / 2f;
+        if (noseY <= eyeMidY)   return false;
+        if (mouthMidY <= noseY) return false;
+
+        float eyeDist   = Math.abs(leftEye.getPosition().x - rightEye.getPosition().x);
+        float faceWidth = face.getBoundingBox().width();
+        if (eyeDist < faceWidth * 0.20f) return false;
+
         if (Math.abs(face.getHeadEulerAngleZ()) > 45f) return false;
         return true;
     }
