@@ -4,6 +4,7 @@ import android.Manifest;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.util.Log;
 import android.widget.Button;
 import android.widget.EditText;
@@ -26,6 +27,7 @@ import com.company.facelogin.database.DatabaseHelper;
 import com.company.facelogin.database.UserDao;
 import com.company.facelogin.ml.FaceImageProcessor;
 import com.company.facelogin.ml.FaceNetModel;
+import com.company.facelogin.ml.LivenessDetector;
 import com.company.facelogin.models.User;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.mlkit.vision.common.InputImage;
@@ -41,27 +43,35 @@ import java.util.concurrent.Executors;
 
 public class RegisterActivity extends AppCompatActivity {
 
-    private static final String TAG = "RegisterActivity";
+    private static final String TAG                  = "RegisterActivity";
+    private static final long   LIVENESS_THROTTLE_MS = 200;
+
+    private enum RegisterPhase { LIVENESS, READY }
 
     // Views
     private PreviewView previewView;
-    private EditText etFirstName;
-    private EditText etLastName;
-    private TextView tvFaceStatus;
-    private TextView tvStatus;
-    private Button btnRegister;
+    private EditText    etFirstName;
+    private EditText    etLastName;
+    private TextView    tvFaceStatus;
+    private TextView    tvStatus;
+    private Button      btnRegister;
 
     // Camera & ML
     private ProcessCameraProvider cameraProvider;
-    private FaceDetector faceDetector;
-    private FaceNetModel faceNetModel;
-    private ExecutorService analysisExecutor;
+    private FaceDetector          faceDetector;
+    private FaceNetModel          faceNetModel;
+    private ExecutorService       analysisExecutor;
+
+    // Liveness
+    private LivenessDetector livenessDetector;
+    private RegisterPhase    registerPhase  = RegisterPhase.LIVENESS;
+    private long             lastLivenessMs = 0;
 
     // Database
     private DatabaseHelper dbHelper;
-    private UserDao userDao;
+    private UserDao        userDao;
 
-    // The most recently computed face embedding; updated from background thread
+    // Embedding set after liveness PASS
     private volatile float[] pendingEmbedding;
 
     private final ActivityResultLauncher<String> permissionLauncher =
@@ -88,34 +98,29 @@ public class RegisterActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        // CameraX handles pause/resume automatically via lifecycle binding.
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        // CameraX handles pause/resume automatically via lifecycle binding.
+        resetLiveness();
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (cameraProvider != null) cameraProvider.unbindAll();
-        if (faceDetector != null) faceDetector.close();
+        if (cameraProvider   != null) cameraProvider.unbindAll();
+        if (faceDetector     != null) faceDetector.close();
         if (analysisExecutor != null) analysisExecutor.shutdown();
-        if (faceNetModel != null) faceNetModel.close();
-        if (dbHelper != null) dbHelper.close();
+        if (faceNetModel     != null) faceNetModel.close();
+        if (dbHelper         != null) dbHelper.close();
     }
 
     // ── Setup ─────────────────────────────────────────────────────────────────
 
     private void bindViews() {
-        previewView   = findViewById(R.id.previewView);
-        etFirstName   = findViewById(R.id.etFirstName);
-        etLastName    = findViewById(R.id.etLastName);
-        tvFaceStatus  = findViewById(R.id.tvFaceStatus);
-        tvStatus      = findViewById(R.id.tvStatus);
-        btnRegister   = findViewById(R.id.btnRegister);
+        previewView  = findViewById(R.id.previewView);
+        etFirstName  = findViewById(R.id.etFirstName);
+        etLastName   = findViewById(R.id.etLastName);
+        tvFaceStatus = findViewById(R.id.tvFaceStatus);
+        tvStatus     = findViewById(R.id.tvStatus);
+        btnRegister  = findViewById(R.id.btnRegister);
+        btnRegister.setEnabled(false);
     }
 
     private void setupDatabase() {
@@ -125,16 +130,16 @@ public class RegisterActivity extends AppCompatActivity {
 
     private void setupAnalysis() {
         analysisExecutor = Executors.newSingleThreadExecutor();
-        faceDetector = buildFaceDetector();
-        faceNetModel = new FaceNetModel();
-        // Load model on background thread to avoid blocking UI
+        faceDetector     = buildFaceDetector();
+        faceNetModel     = new FaceNetModel();
+        livenessDetector = new LivenessDetector();
         analysisExecutor.execute(() -> faceNetModel.loadModel(this));
     }
 
     private void setupRegisterButton() {
         btnRegister.setOnClickListener(v -> {
-            String firstName = etFirstName.getText().toString().trim();
-            String lastName  = etLastName.getText().toString().trim();
+            String  firstName = etFirstName.getText().toString().trim();
+            String  lastName  = etLastName.getText().toString().trim();
             float[] embedding = pendingEmbedding;
 
             if (firstName.isEmpty() || lastName.isEmpty()) {
@@ -142,12 +147,23 @@ public class RegisterActivity extends AppCompatActivity {
                 return;
             }
             if (embedding == null) {
-                tvStatus.setText("Yüz algılanmadı, lütfen kameranıza bakın.");
+                tvStatus.setText("Yüz doğrulama tamamlanmadı.");
                 return;
             }
 
             btnRegister.setEnabled(false);
             analysisExecutor.execute(() -> saveUser(firstName, lastName, embedding));
+        });
+    }
+
+    private void resetLiveness() {
+        registerPhase    = RegisterPhase.LIVENESS;
+        livenessDetector = new LivenessDetector();
+        pendingEmbedding = null;
+        lastLivenessMs   = 0;
+        runOnUiThread(() -> {
+            btnRegister.setEnabled(false);
+            tvFaceStatus.setText(livenessDetector.getInstructionText());
         });
     }
 
@@ -179,12 +195,11 @@ public class RegisterActivity extends AppCompatActivity {
     }
 
     private void bindCameraUseCases(ProcessCameraProvider provider) {
-        Preview preview = buildPreview();
+        Preview       preview       = buildPreview();
         ImageAnalysis imageAnalysis = buildImageAnalysis();
-        CameraSelector frontCamera = CameraSelector.DEFAULT_FRONT_CAMERA;
 
         provider.unbindAll();
-        provider.bindToLifecycle(this, frontCamera, preview, imageAnalysis);
+        provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, imageAnalysis);
     }
 
     private Preview buildPreview() {
@@ -204,11 +219,12 @@ public class RegisterActivity extends AppCompatActivity {
     // ── ML Kit face detection ─────────────────────────────────────────────────
 
     private FaceDetector buildFaceDetector() {
+        // ACCURATE + ALL required for eye probabilities and Euler angles used by liveness
         FaceDetectorOptions options = new FaceDetectorOptions.Builder()
-                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
                 .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
-                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
+                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
                 .setMinFaceSize(0.15f)
                 .enableTracking()
                 .build();
@@ -216,8 +232,8 @@ public class RegisterActivity extends AppCompatActivity {
     }
 
     private void analyzeImage(ImageProxy imageProxy) {
-        int rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
-        Bitmap rawBitmap = FaceImageProcessor.imageProxyToBitmap(imageProxy);
+        int    rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
+        Bitmap rawBitmap       = FaceImageProcessor.imageProxyToBitmap(imageProxy);
 
         if (rawBitmap == null) {
             imageProxy.close();
@@ -235,14 +251,43 @@ public class RegisterActivity extends AppCompatActivity {
     private void onFacesDetected(List<Face> faces, Bitmap rawBitmap, int rotationDegrees) {
         if (faces.isEmpty()) {
             updateFaceStatus("Yüz bulunamadı");
-        } else if (faces.size() == 1) {
-            updateFaceStatus("Yüz algılandı");
-            if (!analysisExecutor.isShutdown()) {
-                analysisExecutor.execute(() ->
-                        computeAndStorePendingEmbedding(rawBitmap, faces.get(0), rotationDegrees));
-            }
-        } else {
+            return;
+        }
+        if (faces.size() > 1) {
             updateFaceStatus("Birden fazla yüz bulundu");
+            return;
+        }
+
+        Face face = faces.get(0);
+
+        if (registerPhase == RegisterPhase.LIVENESS) {
+            checkLiveness(face, rawBitmap, rotationDegrees);
+        }
+        // READY: embedding already captured, camera still previews
+    }
+
+    // ── Liveness detection ────────────────────────────────────────────────────
+
+    private void checkLiveness(Face face, Bitmap rawBitmap, int rotationDegrees) {
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastLivenessMs < LIVENESS_THROTTLE_MS) return;
+        lastLivenessMs = now;
+
+        LivenessDetector.State state = livenessDetector.process(face);
+        tvFaceStatus.setText(livenessDetector.getInstructionText());
+
+        if (state == LivenessDetector.State.PASS) {
+            registerPhase = RegisterPhase.READY;
+            tvFaceStatus.setText("Yüz doğrulandı! Kaydet tuşuna basın.");
+            if (!analysisExecutor.isShutdown()) {
+                final Bitmap bmp = rawBitmap;
+                final Face   f   = face;
+                analysisExecutor.execute(() -> computeAndStorePendingEmbedding(bmp, f, rotationDegrees));
+            }
+        } else if (state == LivenessDetector.State.FAIL) {
+            livenessDetector = new LivenessDetector();
+            lastLivenessMs   = 0;
+            tvFaceStatus.setText("Süre doldu, tekrar deneyin");
         }
     }
 

@@ -5,7 +5,6 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.os.Bundle;
-import android.os.SystemClock;
 import android.util.Log;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -27,7 +26,6 @@ import com.company.facelogin.database.UserDao;
 import com.company.facelogin.ml.EmbeddingComparator;
 import com.company.facelogin.ml.FaceImageProcessor;
 import com.company.facelogin.ml.FaceNetModel;
-import com.company.facelogin.ml.LivenessDetector;
 import com.company.facelogin.models.User;
 import com.company.facelogin.utils.SessionManager;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -47,9 +45,8 @@ public class FaceVerificationActivity extends AppCompatActivity {
 
     public static final String EXTRA_USER_ID = "extra_user_id";
 
-    private static final String TAG                  = "FaceVerification";
-    private static final String TAG_EMBEDDING        = "FACE_EMBEDDING";
-    private static final long   LIVENESS_THROTTLE_MS = 200;
+    private static final String TAG           = "FaceVerification";
+    private static final String TAG_EMBEDDING = "FACE_EMBEDDING";
 
     // Views
     private PreviewView previewView;
@@ -66,21 +63,10 @@ public class FaceVerificationActivity extends AppCompatActivity {
     private UserDao        userDao;
     private SessionManager sessionManager;
 
-    // The account selected on the previous screen
+    // State
     private long          selectedUserId = -1;
     private volatile User selectedUser;
-
-    // ── Verification state machine ─────────────────────────────────────────────
-    // SEARCHING → face match found → LIVENESS → liveness PASS → login
-    private enum VerificationPhase { SEARCHING, LIVENESS }
-    private volatile VerificationPhase phase = VerificationPhase.SEARCHING;
-
-    // Set on background thread when match found; read on main thread in navigateToHome
-    private volatile User matchedUser;
-
-    // Liveness: created and accessed only on main thread after phase switch
-    private LivenessDetector livenessDetector;
-    private long             lastLivenessMs = 0;
+    private volatile boolean verified = false;
 
     // ── Permission launcher ───────────────────────────────────────────────────
 
@@ -126,11 +112,8 @@ public class FaceVerificationActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        // Reset full verification state so back-and-retry works correctly
-        phase            = VerificationPhase.SEARCHING;
-        matchedUser      = null;
-        livenessDetector = null;
-        lastLivenessMs   = 0;
+        verified = false;
+        updateStatusText("Yüzünüzü kameraya bakın");
         analysisExecutor.execute(() -> selectedUser = userDao.getUserById(selectedUserId));
     }
 
@@ -176,8 +159,7 @@ public class FaceVerificationActivity extends AppCompatActivity {
         ImageAnalysis imageAnalysis = buildImageAnalysis();
 
         provider.unbindAll();
-        provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA,
-                preview, imageAnalysis);
+        provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, imageAnalysis);
     }
 
     private Preview buildPreview() {
@@ -198,19 +180,16 @@ public class FaceVerificationActivity extends AppCompatActivity {
 
     private FaceDetector buildFaceDetector() {
         FaceDetectorOptions options = new FaceDetectorOptions.Builder()
-                // ACCURATE ensures Euler angles and eye probabilities on every detected face
-                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
                 .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
-                // ALL required for getLeftEyeOpenProbability / getRightEyeOpenProbability
-                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
+                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
                 .setMinFaceSize(0.15f)
                 .enableTracking()
                 .build();
         return FaceDetection.getClient(options);
     }
 
-    /** Runs on analysisExecutor. Converts frame → Bitmap, then hands off to ML Kit. */
     private void analyzeImage(ImageProxy imageProxy) {
         int    rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
         Bitmap rawBitmap       = FaceImageProcessor.imageProxyToBitmap(imageProxy);
@@ -228,11 +207,9 @@ public class FaceVerificationActivity extends AppCompatActivity {
                 .addOnCompleteListener(task -> imageProxy.close());
     }
 
-    /**
-     * Runs on main thread (ML Kit default executor).
-     * Routes each frame to the correct phase handler.
-     */
     private void onFacesDetected(List<Face> faces, Bitmap rawBitmap, int rotationDegrees) {
+        if (verified) return;
+
         if (faces.isEmpty()) {
             updateStatusText("Yüz bulunamadı");
             return;
@@ -242,26 +219,19 @@ public class FaceVerificationActivity extends AppCompatActivity {
             return;
         }
 
+        updateStatusText("Yüz algılandı");
         Face face = faces.get(0);
-
-        if (phase == VerificationPhase.SEARCHING) {
-            updateStatusText("Yüz algılandı");
-            if (!analysisExecutor.isShutdown()) {
-                final Face capturedFace = face;
-                analysisExecutor.execute(() ->
-                        prepareFaceForRecognition(rawBitmap, capturedFace, rotationDegrees));
-            }
-        } else {
-            // LIVENESS phase: lightweight float comparisons, safe on main thread
-            checkLiveness(face);
+        if (!analysisExecutor.isShutdown()) {
+            final Face capturedFace = face;
+            analysisExecutor.execute(() ->
+                    prepareFaceForRecognition(rawBitmap, capturedFace, rotationDegrees));
         }
     }
 
-    // ── Phase 1: FaceNet recognition ──────────────────────────────────────────
+    // ── FaceNet recognition ───────────────────────────────────────────────────
 
-    /** Runs on analysisExecutor. */
     private void prepareFaceForRecognition(Bitmap rawBitmap, Face face, int rotationDegrees) {
-        if (phase != VerificationPhase.SEARCHING) return;
+        if (verified) return;
 
         Bitmap faceInput = FaceImageProcessor.prepareFaceInput(
                 rawBitmap, rotationDegrees, face.getBoundingBox());
@@ -274,7 +244,6 @@ public class FaceVerificationActivity extends AppCompatActivity {
         verifyIdentity(embedding);
     }
 
-    /** Runs on analysisExecutor. On match, transitions to LIVENESS phase on main thread. */
     private void verifyIdentity(float[] embedding) {
         User user = selectedUser;
 
@@ -290,59 +259,18 @@ public class FaceVerificationActivity extends AppCompatActivity {
         Log.d(TAG, "MATCH_SCORE: user=" + name + " score=" + String.format("%.4f", score));
 
         if (score >= EmbeddingComparator.DEFAULT_THRESHOLD) {
-            matchedUser = user;
-            Log.d(TAG, "FACE_MATCH: " + name + " – starting liveness check");
-            runOnUiThread(this::startLivenessPhase);
+            Log.d(TAG, "LOGIN_SUCCESS: " + name);
+            verified = true;
+            runOnUiThread(() -> navigateToHome(user));
         } else {
             Log.d(TAG, "LOGIN_FAILED: no match (score=" + String.format("%.4f", score) + ")");
             updateStatusText("Kullanıcı tanınamadı");
         }
     }
 
-    // ── Phase 2: Liveness detection ───────────────────────────────────────────
-
-    /** Runs on main thread. Creates the liveness detector and switches phase. */
-    private void startLivenessPhase() {
-        livenessDetector = new LivenessDetector();
-        phase            = VerificationPhase.LIVENESS;
-        tvHeader.setText(livenessDetector.getInstructionText());
-    }
-
-    /**
-     * Runs on main thread (called from onFacesDetected).
-     * Throttled to LIVENESS_THROTTLE_MS to avoid over-sampling.
-     */
-    private void checkLiveness(Face face) {
-        long now = SystemClock.elapsedRealtime();
-        if (now - lastLivenessMs < LIVENESS_THROTTLE_MS) return;
-        lastLivenessMs = now;
-
-        if (livenessDetector == null) return;
-
-        LivenessDetector.State livenessState = livenessDetector.process(face);
-        tvHeader.setText(livenessDetector.getInstructionText());
-
-        switch (livenessState) {
-            case PASS:
-                User user = matchedUser;
-                Log.d(TAG, "LOGIN_SUCCESS: " + user.getFirstName() + " " + user.getLastName());
-                navigateToHome(user);
-                break;
-
-            case FAIL:
-                Log.d(TAG, "LOGIN_REJECTED: liveness check failed (fake face suspected)");
-                phase            = VerificationPhase.SEARCHING;
-                matchedUser      = null;
-                livenessDetector = null;
-                tvHeader.setText("Liveness başarısız – tekrar deneyin");
-                break;
-        }
-    }
-
     // ── Navigation ────────────────────────────────────────────────────────────
 
     private void navigateToHome(User user) {
-        phase = VerificationPhase.SEARCHING; // prevent re-entry from late frames
         String fullName = user.getFirstName() + " " + user.getLastName();
         Toast.makeText(this, "Hoş geldiniz, " + fullName, Toast.LENGTH_SHORT).show();
         sessionManager.saveSession(user.getId(), user.getFirstName(), user.getLastName());
