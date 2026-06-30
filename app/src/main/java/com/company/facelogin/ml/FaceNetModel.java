@@ -19,7 +19,7 @@ public class FaceNetModel {
     private static final String TAG = "FaceNetModel";
     private static final String MODEL_FILE = "mobilefacenet.tflite";
 
-    private static final int INPUT_SIZE = FaceImageProcessor.FACE_INPUT_SIZE; // 160
+    private static final int INPUT_SIZE = FaceImageProcessor.FACE_INPUT_SIZE; // 112
     private static final int PIXEL_CHANNELS = 3;                              // RGB
     private static final int BYTES_PER_FLOAT = 4;
 
@@ -49,7 +49,7 @@ public class FaceNetModel {
     // ── Inference ─────────────────────────────────────────────────────────────
 
     /**
-     * Converts a 160×160 Bitmap to a float embedding vector.
+     * Converts a 112×112 Bitmap to a float embedding vector.
      * Returns null if the model is not loaded.
      * Safe to call from a background thread; not re-entrant.
      */
@@ -80,7 +80,7 @@ public class FaceNetModel {
     }
 
     /**
-     * Converts a 160×160 ARGB Bitmap to a flat float ByteBuffer normalized to [-1, 1].
+     * Converts a 112×112 ARGB Bitmap to a flat float ByteBuffer normalized to [-1, 1].
      * Formula per channel: (pixelValue - 127.5) / 128.0
      */
     private ByteBuffer bitmapToByteBuffer(Bitmap bitmap) {

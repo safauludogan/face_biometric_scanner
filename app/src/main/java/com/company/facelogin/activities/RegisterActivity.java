@@ -25,6 +25,7 @@ import com.company.facelogin.R;
 import com.company.facelogin.database.UserDao;
 import com.company.facelogin.ml.FaceImageProcessor;
 import com.company.facelogin.ml.FaceNetModel;
+import com.company.facelogin.ml.FaceValidator;
 import com.company.facelogin.ml.LivenessDetector;
 import com.company.facelogin.views.FaceGuideOverlayView;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -33,7 +34,6 @@ import com.google.mlkit.vision.face.Face;
 import com.google.mlkit.vision.face.FaceDetection;
 import com.google.mlkit.vision.face.FaceDetector;
 import com.google.mlkit.vision.face.FaceDetectorOptions;
-import com.google.mlkit.vision.face.FaceLandmark;
 
 import java.util.List;
 import java.util.concurrent.ExecutionException;
@@ -58,12 +58,13 @@ public class RegisterActivity extends AppCompatActivity {
     private FaceNetModel          faceNetModel;
     private ExecutorService       analysisExecutor;
 
-    // Liveness
-    private LivenessDetector livenessDetector;
-    private RegisterPhase    registerPhase   = RegisterPhase.LIVENESS;
-    private boolean          livenessStarted = false;
-    private long             lastLivenessMs  = 0;
-    private int              faceLikeFrames  = 0;
+    // Liveness — volatile: registerPhase/livenessStarted written on main thread,
+    // read on analysisExecutor thread inside analyzeImage
+    private LivenessDetector        livenessDetector;
+    private volatile RegisterPhase  registerPhase   = RegisterPhase.LIVENESS;
+    private volatile boolean        livenessStarted = false;
+    private long                    lastLivenessMs  = 0;
+    private int                     faceLikeFrames  = 0;
 
     // Launched after liveness PASS; on RESULT_OK this activity also finishes
     private final ActivityResultLauncher<Intent> registerInfoLauncher =
@@ -226,7 +227,7 @@ public class RegisterActivity extends AppCompatActivity {
 
         Face face = faces.get(0);
 
-        if (!isFaceLike(face)) {
+        if (!FaceValidator.isFaceLike(face)) {
             faceLikeFrames = 0;
             faceGuideOverlay.setFaceState(FaceGuideOverlayView.FaceState.SEARCHING);
             updateStatus("Yüzünüzü kameraya bakın");
@@ -242,48 +243,6 @@ public class RegisterActivity extends AppCompatActivity {
             faceGuideOverlay.setFaceState(FaceGuideOverlayView.FaceState.SEARCHING);
             updateStatus("Yüzünüzü çerçeveye yerleştirin");
         }
-    }
-
-    // ── Face validity (anti-spoofing) ─────────────────────────────────────────
-
-    /**
-     * Returns true only for a plausible human face.
-     * Rejects hands, objects, and phantom detections.
-     * Requires CLASSIFICATION_MODE_ALL (eye open probabilities).
-     */
-    private boolean isFaceLike(Face face) {
-        // Göz sınıflandırmaları mevcut ve makul olmalı
-        Float leftEyeProb  = face.getLeftEyeOpenProbability();
-        Float rightEyeProb = face.getRightEyeOpenProbability();
-        if (leftEyeProb == null || rightEyeProb == null)  return false;
-        if (Math.max(leftEyeProb, rightEyeProb) < 0.1f) return false;
-
-        // Gülümseme olasılığı — ML Kit bunu ancak tam yüz yapısında hesaplar
-        if (face.getSmilingProbability() == null) return false;
-
-        // Beş temel landmark'ın tamamı mevcut olmalı
-        FaceLandmark noseBase   = face.getLandmark(FaceLandmark.NOSE_BASE);
-        FaceLandmark leftEye    = face.getLandmark(FaceLandmark.LEFT_EYE);
-        FaceLandmark rightEye   = face.getLandmark(FaceLandmark.RIGHT_EYE);
-        FaceLandmark mouthLeft  = face.getLandmark(FaceLandmark.MOUTH_LEFT);
-        FaceLandmark mouthRight = face.getLandmark(FaceLandmark.MOUTH_RIGHT);
-        if (noseBase == null || leftEye == null || rightEye == null
-                || mouthLeft == null || mouthRight == null) return false;
-
-        // Dikey sıralama: göz → burun → ağız (Y büyüdükçe aşağı)
-        float eyeMidY   = (leftEye.getPosition().y + rightEye.getPosition().y) / 2f;
-        float noseY     = noseBase.getPosition().y;
-        float mouthMidY = (mouthLeft.getPosition().y + mouthRight.getPosition().y) / 2f;
-        if (noseY <= eyeMidY)   return false; // burun gözlerin altında değil
-        if (mouthMidY <= noseY) return false; // ağız burnun altında değil
-
-        // Gözler arası mesafe yüz genişliğinin en az %20'si
-        float eyeDist   = Math.abs(leftEye.getPosition().x - rightEye.getPosition().x);
-        float faceWidth = face.getBoundingBox().width();
-        if (eyeDist < faceWidth * 0.20f) return false;
-
-        if (Math.abs(face.getHeadEulerAngleZ()) > 45f) return false;
-        return true;
     }
 
     // ── Oval validation ───────────────────────────────────────────────────────

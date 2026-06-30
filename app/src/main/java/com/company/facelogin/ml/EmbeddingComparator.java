@@ -11,6 +11,7 @@ public final class EmbeddingComparator {
      * Returns 0 if either vector is a zero vector.
      */
     public static float cosineSimilarity(float[] a, float[] b) {
+        if (a.length != b.length) return 0f;
         float dot = 0f, normASq = 0f, normBSq = 0f;
         for (int i = 0; i < a.length; i++) {
             dot    += a[i] * b[i];

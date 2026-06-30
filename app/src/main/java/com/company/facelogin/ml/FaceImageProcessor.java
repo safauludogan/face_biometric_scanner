@@ -75,7 +75,7 @@ public final class FaceImageProcessor {
     }
 
     /**
-     * Scales the bitmap to FACE_INPUT_SIZE × FACE_INPUT_SIZE (160×160).
+     * Scales the bitmap to FACE_INPUT_SIZE × FACE_INPUT_SIZE (112×112).
      */
     public static Bitmap resizeFace(Bitmap bitmap) {
         return Bitmap.createScaledBitmap(bitmap, FACE_INPUT_SIZE, FACE_INPUT_SIZE, true);

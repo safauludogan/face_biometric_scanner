@@ -2,7 +2,9 @@ package com.company.facelogin.activities;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.view.View;
 import android.widget.Button;
+import android.widget.TextView;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -20,8 +22,9 @@ import java.util.concurrent.Executors;
 public class AccountSelectionActivity extends AppCompatActivity {
 
     private AccountAdapter adapter;
+    private TextView       tvEmpty;
     private DatabaseHelper dbHelper;
-    private UserDao userDao;
+    private UserDao        userDao;
     private ExecutorService executor;
 
     @Override
@@ -33,6 +36,7 @@ public class AccountSelectionActivity extends AppCompatActivity {
         userDao  = new UserDao(dbHelper);
         executor = Executors.newSingleThreadExecutor();
 
+        tvEmpty = findViewById(R.id.tvEmpty);
         setupRecyclerView();
         setupNewRegistrationButton();
     }
@@ -70,7 +74,10 @@ public class AccountSelectionActivity extends AppCompatActivity {
     private void loadUsers() {
         executor.execute(() -> {
             java.util.List<User> users = userDao.getAllUsers();
-            runOnUiThread(() -> adapter.updateUsers(users));
+            runOnUiThread(() -> {
+                adapter.updateUsers(users);
+                tvEmpty.setVisibility(users.isEmpty() ? View.VISIBLE : View.GONE);
+            });
         });
     }
 

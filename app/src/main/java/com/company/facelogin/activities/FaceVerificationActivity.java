@@ -26,6 +26,7 @@ import com.company.facelogin.database.UserDao;
 import com.company.facelogin.ml.EmbeddingComparator;
 import com.company.facelogin.ml.FaceImageProcessor;
 import com.company.facelogin.ml.FaceNetModel;
+import com.company.facelogin.ml.FaceValidator;
 import com.company.facelogin.models.User;
 import com.company.facelogin.utils.SessionManager;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -34,9 +35,7 @@ import com.google.mlkit.vision.face.Face;
 import com.google.mlkit.vision.face.FaceDetection;
 import com.google.mlkit.vision.face.FaceDetector;
 import com.google.mlkit.vision.face.FaceDetectorOptions;
-import com.google.mlkit.vision.face.FaceLandmark;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -46,8 +45,7 @@ public class FaceVerificationActivity extends AppCompatActivity {
 
     public static final String EXTRA_USER_ID = "extra_user_id";
 
-    private static final String TAG           = "FaceVerification";
-    private static final String TAG_EMBEDDING = "FACE_EMBEDDING";
+    private static final String TAG             = "FaceVerification";
     private static final int    MIN_FACE_FRAMES = 6;
 
     // Views
@@ -184,7 +182,7 @@ public class FaceVerificationActivity extends AppCompatActivity {
 
     private FaceDetector buildFaceDetector() {
         FaceDetectorOptions options = new FaceDetectorOptions.Builder()
-                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
                 .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
@@ -227,7 +225,7 @@ public class FaceVerificationActivity extends AppCompatActivity {
 
         Face face = faces.get(0);
 
-        if (!isFaceLike(face)) {
+        if (!FaceValidator.isFaceLike(face)) {
             faceLikeFrames = 0;
             updateStatusText("Yüzünüzü kameraya bakın");
             return;
@@ -238,45 +236,18 @@ public class FaceVerificationActivity extends AppCompatActivity {
             updateStatusText("Yüz algılandı");
             return;
         }
+        if (faceLikeFrames > MIN_FACE_FRAMES) {
+            // Recognition already dispatched — wait for result
+            return;
+        }
 
+        // Exactly at threshold: dispatch recognition exactly once
         updateStatusText("Yüz algılandı");
         if (!analysisExecutor.isShutdown()) {
             final Face capturedFace = face;
             analysisExecutor.execute(() ->
                     prepareFaceForRecognition(rawBitmap, capturedFace, rotationDegrees));
         }
-    }
-
-    // ── Face validity (anti-spoofing) ─────────────────────────────────────────
-
-    private boolean isFaceLike(Face face) {
-        Float leftEyeProb  = face.getLeftEyeOpenProbability();
-        Float rightEyeProb = face.getRightEyeOpenProbability();
-        if (leftEyeProb == null || rightEyeProb == null)  return false;
-        if (Math.max(leftEyeProb, rightEyeProb) < 0.1f) return false;
-
-        if (face.getSmilingProbability() == null) return false;
-
-        FaceLandmark noseBase   = face.getLandmark(FaceLandmark.NOSE_BASE);
-        FaceLandmark leftEye    = face.getLandmark(FaceLandmark.LEFT_EYE);
-        FaceLandmark rightEye   = face.getLandmark(FaceLandmark.RIGHT_EYE);
-        FaceLandmark mouthLeft  = face.getLandmark(FaceLandmark.MOUTH_LEFT);
-        FaceLandmark mouthRight = face.getLandmark(FaceLandmark.MOUTH_RIGHT);
-        if (noseBase == null || leftEye == null || rightEye == null
-                || mouthLeft == null || mouthRight == null) return false;
-
-        float eyeMidY   = (leftEye.getPosition().y + rightEye.getPosition().y) / 2f;
-        float noseY     = noseBase.getPosition().y;
-        float mouthMidY = (mouthLeft.getPosition().y + mouthRight.getPosition().y) / 2f;
-        if (noseY <= eyeMidY)   return false;
-        if (mouthMidY <= noseY) return false;
-
-        float eyeDist   = Math.abs(leftEye.getPosition().x - rightEye.getPosition().x);
-        float faceWidth = face.getBoundingBox().width();
-        if (eyeDist < faceWidth * 0.20f) return false;
-
-        if (Math.abs(face.getHeadEulerAngleZ()) > 45f) return false;
-        return true;
     }
 
     // ── FaceNet recognition ───────────────────────────────────────────────────
@@ -291,7 +262,6 @@ public class FaceVerificationActivity extends AppCompatActivity {
         float[] embedding = faceNetModel.getEmbedding(faceInput);
         if (embedding == null) return;
 
-        Log.d(TAG_EMBEDDING, Arrays.toString(embedding));
         verifyIdentity(embedding);
     }
 

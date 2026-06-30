@@ -50,11 +50,6 @@ public class LivenessDetector {
         return state;
     }
 
-    /** Convenience: returns true once liveness is fully confirmed. */
-    public boolean isFaceLive(Face face) {
-        return process(face) == State.PASS;
-    }
-
     public State getState() { return state; }
 
     public String getInstructionText() {

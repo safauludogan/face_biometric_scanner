@@ -8,6 +8,8 @@ import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.company.facelogin.R;
+import com.company.facelogin.database.DatabaseHelper;
+import com.company.facelogin.database.UserDao;
 import com.company.facelogin.utils.SessionManager;
 
 public class HomeActivity extends AppCompatActivity {
@@ -22,6 +24,17 @@ public class HomeActivity extends AppCompatActivity {
 
         // Security gate: no valid session → cannot stay on this screen
         if (!sessionManager.isLoggedIn()) {
+            redirectToLogin();
+            return;
+        }
+
+        // Guard against stale sessions (e.g. user deleted from DB while logged in)
+        DatabaseHelper dbHelper = new DatabaseHelper(this);
+        UserDao userDao = new UserDao(dbHelper);
+        boolean userExists = userDao.getUserById(sessionManager.getLoggedInUserId()) != null;
+        dbHelper.close();
+        if (!userExists) {
+            sessionManager.clearSession();
             redirectToLogin();
             return;
         }

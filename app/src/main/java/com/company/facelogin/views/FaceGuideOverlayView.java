@@ -85,8 +85,8 @@ public class FaceGuideOverlayView extends View {
         canvas.drawOval(ovalRect, borderPaint);
     }
 
-    /** Oval bounds in this view's coordinate space. */
+    /** Oval bounds in this view's coordinate space (defensive copy). */
     public RectF getOvalRect() {
-        return ovalRect;
+        return new RectF(ovalRect);
     }
 }
