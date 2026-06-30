@@ -34,6 +34,7 @@ import com.google.mlkit.vision.face.Face;
 import com.google.mlkit.vision.face.FaceDetection;
 import com.google.mlkit.vision.face.FaceDetector;
 import com.google.mlkit.vision.face.FaceDetectorOptions;
+import com.google.mlkit.vision.face.FaceLandmark;
 
 import java.util.Arrays;
 import java.util.List;
@@ -181,9 +182,9 @@ public class FaceVerificationActivity extends AppCompatActivity {
     private FaceDetector buildFaceDetector() {
         FaceDetectorOptions options = new FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
+                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
                 .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
-                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
+                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
                 .setMinFaceSize(0.15f)
                 .enableTracking()
                 .build();
@@ -219,13 +220,33 @@ public class FaceVerificationActivity extends AppCompatActivity {
             return;
         }
 
-        updateStatusText("Yüz algılandı");
         Face face = faces.get(0);
+
+        if (!isFaceLike(face)) {
+            updateStatusText("Yüzünüzü kameraya bakın");
+            return;
+        }
+
+        updateStatusText("Yüz algılandı");
         if (!analysisExecutor.isShutdown()) {
             final Face capturedFace = face;
             analysisExecutor.execute(() ->
                     prepareFaceForRecognition(rawBitmap, capturedFace, rotationDegrees));
         }
+    }
+
+    // ── Face validity (anti-spoofing) ─────────────────────────────────────────
+
+    private boolean isFaceLike(Face face) {
+        Float leftEye  = face.getLeftEyeOpenProbability();
+        Float rightEye = face.getRightEyeOpenProbability();
+        if (leftEye == null || rightEye == null)  return false;
+        if (Math.max(leftEye, rightEye) < 0.05f) return false;
+        if (face.getLandmark(FaceLandmark.NOSE_BASE) == null) return false;
+        if (face.getLandmark(FaceLandmark.LEFT_EYE)  == null) return false;
+        if (face.getLandmark(FaceLandmark.RIGHT_EYE) == null) return false;
+        if (Math.abs(face.getHeadEulerAngleZ()) > 45f) return false;
+        return true;
     }
 
     // ── FaceNet recognition ───────────────────────────────────────────────────

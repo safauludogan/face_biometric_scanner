@@ -1,13 +1,12 @@
 package com.company.facelogin.activities;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.RectF;
 import android.os.Bundle;
 import android.os.SystemClock;
-import android.util.Log;
-import android.widget.Button;
-import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -23,18 +22,18 @@ import androidx.camera.view.PreviewView;
 import androidx.core.content.ContextCompat;
 
 import com.company.facelogin.R;
-import com.company.facelogin.database.DatabaseHelper;
 import com.company.facelogin.database.UserDao;
 import com.company.facelogin.ml.FaceImageProcessor;
 import com.company.facelogin.ml.FaceNetModel;
 import com.company.facelogin.ml.LivenessDetector;
-import com.company.facelogin.models.User;
+import com.company.facelogin.views.FaceGuideOverlayView;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.face.Face;
 import com.google.mlkit.vision.face.FaceDetection;
 import com.google.mlkit.vision.face.FaceDetector;
 import com.google.mlkit.vision.face.FaceDetectorOptions;
+import com.google.mlkit.vision.face.FaceLandmark;
 
 import java.util.List;
 import java.util.concurrent.ExecutionException;
@@ -43,18 +42,14 @@ import java.util.concurrent.Executors;
 
 public class RegisterActivity extends AppCompatActivity {
 
-    private static final String TAG                  = "RegisterActivity";
-    private static final long   LIVENESS_THROTTLE_MS = 200;
+    private static final long LIVENESS_THROTTLE_MS = 200;
 
-    private enum RegisterPhase { LIVENESS, READY }
+    private enum RegisterPhase { LIVENESS, DONE }
 
     // Views
-    private PreviewView previewView;
-    private EditText    etFirstName;
-    private EditText    etLastName;
-    private TextView    tvFaceStatus;
-    private TextView    tvStatus;
-    private Button      btnRegister;
+    private PreviewView          previewView;
+    private FaceGuideOverlayView faceGuideOverlay;
+    private TextView             tvFaceStatus;
 
     // Camera & ML
     private ProcessCameraProvider cameraProvider;
@@ -64,15 +59,19 @@ public class RegisterActivity extends AppCompatActivity {
 
     // Liveness
     private LivenessDetector livenessDetector;
-    private RegisterPhase    registerPhase  = RegisterPhase.LIVENESS;
-    private long             lastLivenessMs = 0;
+    private RegisterPhase    registerPhase   = RegisterPhase.LIVENESS;
+    private boolean          livenessStarted = false;
+    private long             lastLivenessMs  = 0;
 
-    // Database
-    private DatabaseHelper dbHelper;
-    private UserDao        userDao;
-
-    // Embedding set after liveness PASS
-    private volatile float[] pendingEmbedding;
+    // Launched after liveness PASS; on RESULT_OK this activity also finishes
+    private final ActivityResultLauncher<Intent> registerInfoLauncher =
+            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+                if (result.getResultCode() == RESULT_OK) {
+                    finish(); // registration complete → back to AccountSelectionActivity
+                } else {
+                    resetLiveness(); // user cancelled → allow retry
+                }
+            });
 
     private final ActivityResultLauncher<String> permissionLauncher =
             registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {
@@ -88,17 +87,20 @@ public class RegisterActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_register);
 
-        bindViews();
-        setupDatabase();
+        previewView      = findViewById(R.id.previewView);
+        faceGuideOverlay = findViewById(R.id.faceGuideOverlay);
+        tvFaceStatus     = findViewById(R.id.tvFaceStatus);
+
         setupAnalysis();
-        setupRegisterButton();
         requestCameraPermissionIfNeeded();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        resetLiveness();
+        if (registerPhase != RegisterPhase.DONE) {
+            resetLiveness();
+        }
     }
 
     @Override
@@ -108,25 +110,9 @@ public class RegisterActivity extends AppCompatActivity {
         if (faceDetector     != null) faceDetector.close();
         if (analysisExecutor != null) analysisExecutor.shutdown();
         if (faceNetModel     != null) faceNetModel.close();
-        if (dbHelper         != null) dbHelper.close();
     }
 
     // ── Setup ─────────────────────────────────────────────────────────────────
-
-    private void bindViews() {
-        previewView  = findViewById(R.id.previewView);
-        etFirstName  = findViewById(R.id.etFirstName);
-        etLastName   = findViewById(R.id.etLastName);
-        tvFaceStatus = findViewById(R.id.tvFaceStatus);
-        tvStatus     = findViewById(R.id.tvStatus);
-        btnRegister  = findViewById(R.id.btnRegister);
-        btnRegister.setEnabled(false);
-    }
-
-    private void setupDatabase() {
-        dbHelper = new DatabaseHelper(this);
-        userDao  = new UserDao(dbHelper);
-    }
 
     private void setupAnalysis() {
         analysisExecutor = Executors.newSingleThreadExecutor();
@@ -136,34 +122,14 @@ public class RegisterActivity extends AppCompatActivity {
         analysisExecutor.execute(() -> faceNetModel.loadModel(this));
     }
 
-    private void setupRegisterButton() {
-        btnRegister.setOnClickListener(v -> {
-            String  firstName = etFirstName.getText().toString().trim();
-            String  lastName  = etLastName.getText().toString().trim();
-            float[] embedding = pendingEmbedding;
-
-            if (firstName.isEmpty() || lastName.isEmpty()) {
-                tvStatus.setText("Ad ve soyad gerekli.");
-                return;
-            }
-            if (embedding == null) {
-                tvStatus.setText("Yüz doğrulama tamamlanmadı.");
-                return;
-            }
-
-            btnRegister.setEnabled(false);
-            analysisExecutor.execute(() -> saveUser(firstName, lastName, embedding));
-        });
-    }
-
     private void resetLiveness() {
         registerPhase    = RegisterPhase.LIVENESS;
         livenessDetector = new LivenessDetector();
-        pendingEmbedding = null;
+        livenessStarted  = false;
         lastLivenessMs   = 0;
         runOnUiThread(() -> {
-            btnRegister.setEnabled(false);
-            tvFaceStatus.setText(livenessDetector.getInstructionText());
+            faceGuideOverlay.setFaceState(FaceGuideOverlayView.FaceState.SEARCHING);
+            tvFaceStatus.setText("Yüzünüzü çerçeveye yerleştirin");
         });
     }
 
@@ -187,42 +153,28 @@ public class RegisterActivity extends AppCompatActivity {
         future.addListener(() -> {
             try {
                 cameraProvider = future.get();
-                bindCameraUseCases(cameraProvider);
+                Preview       preview       = new Preview.Builder().build();
+                ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .build();
+                preview.setSurfaceProvider(previewView.getSurfaceProvider());
+                imageAnalysis.setAnalyzer(analysisExecutor, this::analyzeImage);
+
+                cameraProvider.unbindAll();
+                cameraProvider.bindToLifecycle(
+                        this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, imageAnalysis);
             } catch (ExecutionException | InterruptedException e) {
                 Toast.makeText(this, "Kamera başlatılamadı.", Toast.LENGTH_SHORT).show();
             }
         }, ContextCompat.getMainExecutor(this));
     }
 
-    private void bindCameraUseCases(ProcessCameraProvider provider) {
-        Preview       preview       = buildPreview();
-        ImageAnalysis imageAnalysis = buildImageAnalysis();
-
-        provider.unbindAll();
-        provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, imageAnalysis);
-    }
-
-    private Preview buildPreview() {
-        Preview preview = new Preview.Builder().build();
-        preview.setSurfaceProvider(previewView.getSurfaceProvider());
-        return preview;
-    }
-
-    private ImageAnalysis buildImageAnalysis() {
-        ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build();
-        imageAnalysis.setAnalyzer(analysisExecutor, this::analyzeImage);
-        return imageAnalysis;
-    }
-
     // ── ML Kit face detection ─────────────────────────────────────────────────
 
     private FaceDetector buildFaceDetector() {
-        // ACCURATE + ALL required for eye probabilities and Euler angles used by liveness
         FaceDetectorOptions options = new FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
-                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
+                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
                 .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
                 .setMinFaceSize(0.15f)
@@ -232,38 +184,125 @@ public class RegisterActivity extends AppCompatActivity {
     }
 
     private void analyzeImage(ImageProxy imageProxy) {
-        int    rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
-        Bitmap rawBitmap       = FaceImageProcessor.imageProxyToBitmap(imageProxy);
-
-        if (rawBitmap == null) {
+        if (registerPhase == RegisterPhase.DONE) {
             imageProxy.close();
             return;
         }
 
-        InputImage inputImage = InputImage.fromBitmap(rawBitmap, rotationDegrees);
+        int rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
+        int imageWidth  = (rotationDegrees == 90 || rotationDegrees == 270)
+                ? imageProxy.getHeight() : imageProxy.getWidth();
+        int imageHeight = (rotationDegrees == 90 || rotationDegrees == 270)
+                ? imageProxy.getWidth() : imageProxy.getHeight();
 
+        Bitmap rawBitmap = FaceImageProcessor.imageProxyToBitmap(imageProxy);
+        if (rawBitmap == null) { imageProxy.close(); return; }
+
+        InputImage inputImage = InputImage.fromBitmap(rawBitmap, rotationDegrees);
         faceDetector.process(inputImage)
-                .addOnSuccessListener(faces -> onFacesDetected(faces, rawBitmap, rotationDegrees))
-                .addOnFailureListener(e -> updateFaceStatus("Algılama hatası"))
+                .addOnSuccessListener(faces ->
+                        onFacesDetected(faces, rawBitmap, rotationDegrees, imageWidth, imageHeight))
+                .addOnFailureListener(e -> updateStatus("Algılama hatası"))
                 .addOnCompleteListener(task -> imageProxy.close());
     }
 
-    private void onFacesDetected(List<Face> faces, Bitmap rawBitmap, int rotationDegrees) {
+    private void onFacesDetected(List<Face> faces, Bitmap rawBitmap,
+                                  int rotationDegrees, int imageWidth, int imageHeight) {
+        if (registerPhase == RegisterPhase.DONE) return;
+
         if (faces.isEmpty()) {
-            updateFaceStatus("Yüz bulunamadı");
+            faceGuideOverlay.setFaceState(FaceGuideOverlayView.FaceState.SEARCHING);
+            updateStatus("Yüzünüzü çerçeveye yerleştirin");
             return;
         }
         if (faces.size() > 1) {
-            updateFaceStatus("Birden fazla yüz bulundu");
+            faceGuideOverlay.setFaceState(FaceGuideOverlayView.FaceState.SEARCHING);
+            updateStatus("Birden fazla yüz bulundu");
             return;
         }
 
         Face face = faces.get(0);
 
-        if (registerPhase == RegisterPhase.LIVENESS) {
-            checkLiveness(face, rawBitmap, rotationDegrees);
+        if (!isFaceLike(face)) {
+            faceGuideOverlay.setFaceState(FaceGuideOverlayView.FaceState.SEARCHING);
+            updateStatus("Yüzünüzü kameraya bakın");
+            return;
         }
-        // READY: embedding already captured, camera still previews
+
+        if (livenessStarted || isFaceInOval(face, imageWidth, imageHeight)) {
+            livenessStarted = true;
+            faceGuideOverlay.setFaceState(FaceGuideOverlayView.FaceState.INSIDE);
+            checkLiveness(face, rawBitmap, rotationDegrees);
+        } else {
+            faceGuideOverlay.setFaceState(FaceGuideOverlayView.FaceState.SEARCHING);
+            updateStatus("Yüzünüzü çerçeveye yerleştirin");
+        }
+    }
+
+    // ── Face validity (anti-spoofing) ─────────────────────────────────────────
+
+    /**
+     * Returns true only for a plausible human face.
+     * Rejects hands, objects, and phantom detections.
+     * Requires CLASSIFICATION_MODE_ALL (eye open probabilities).
+     */
+    private boolean isFaceLike(Face face) {
+        // Eye classifications must be present and plausible
+        Float leftEye  = face.getLeftEyeOpenProbability();
+        Float rightEye = face.getRightEyeOpenProbability();
+        if (leftEye == null || rightEye == null)  return false;
+        if (Math.max(leftEye, rightEye) < 0.05f) return false;
+        // Anatomical landmarks — a hand never has a nose
+        if (face.getLandmark(FaceLandmark.NOSE_BASE) == null) return false;
+        if (face.getLandmark(FaceLandmark.LEFT_EYE)  == null) return false;
+        if (face.getLandmark(FaceLandmark.RIGHT_EYE) == null) return false;
+        // Reject extreme roll
+        if (Math.abs(face.getHeadEulerAngleZ()) > 45f) return false;
+        return true;
+    }
+
+    // ── Oval validation ───────────────────────────────────────────────────────
+
+    /**
+     * Yüzü doğrudan view piksel koordinatlarına çevirir ve oval rect ile kıyaslar.
+     * FILL_CENTER dönüşümü: image → view (ölçek + ofset).
+     * imgW/imgH = rotasyon uygulanmış (portrait) image boyutları.
+     */
+    private boolean isFaceInOval(Face face, int imgW, int imgH) {
+        int   viewW = faceGuideOverlay.getWidth();
+        int   viewH = faceGuideOverlay.getHeight();
+        RectF oval  = faceGuideOverlay.getOvalRect();
+        if (viewW == 0 || viewH == 0 || oval.isEmpty()) return false;
+
+        // FILL_CENTER: büyük boyutu sığdıracak scale, küçük boyut kırpılır
+        float scale   = Math.max((float) viewW / imgW, (float) viewH / imgH);
+        float offX    = (viewW - imgW * scale) / 2f;   // negatif → yanlarda kırpma
+        float offY    = (viewH - imgH * scale) / 2f;   // negatif → üst/altta kırpma
+
+        // Yüz bounding box → view piksel koordinatları
+        RectF box     = new RectF(face.getBoundingBox());
+        float fL      = box.left   * scale + offX;
+        float fR      = box.right  * scale + offX;
+        float fT      = box.top    * scale + offY;
+        float fB      = box.bottom * scale + offY;
+        float faceCX  = (fL + fR) / 2f;
+        float faceCY  = (fT + fB) / 2f;
+        float faceW   = fR - fL;
+        float faceH   = fB - fT;
+
+        // Yüz oval boyutunun %65–110'u arasında olmalı
+        boolean goodSize  = faceW > oval.width()  * 0.65f && faceW < oval.width()  * 1.10f
+                         && faceH > oval.height() * 0.65f && faceH < oval.height() * 1.10f;
+
+        // Yüz merkezi oval merkezi etrafında ±%15 (yatay), ±%20 (dikey)
+        boolean centered  = Math.abs(faceCX - oval.centerX()) < viewW * 0.15f
+                         && Math.abs(faceCY - oval.centerY()) < viewH * 0.20f;
+
+        // Yüzün hiçbir kenarı view sınırını belirgin şekilde aşmamalı
+        boolean notClipped = fL > -viewW * 0.05f && fR < viewW * 1.05f
+                          && fT > -viewH * 0.05f && fB < viewH * 1.05f;
+
+        return goodSize && centered && notClipped;
     }
 
     // ── Liveness detection ────────────────────────────────────────────────────
@@ -277,57 +316,43 @@ public class RegisterActivity extends AppCompatActivity {
         tvFaceStatus.setText(livenessDetector.getInstructionText());
 
         if (state == LivenessDetector.State.PASS) {
-            registerPhase = RegisterPhase.READY;
-            tvFaceStatus.setText("Yüz doğrulandı! Kaydet tuşuna basın.");
+            registerPhase = RegisterPhase.DONE;
+            faceGuideOverlay.setFaceState(FaceGuideOverlayView.FaceState.PASS);
+            tvFaceStatus.setText("Yüz doğrulandı! Bilgileriniz alınıyor...");
             if (!analysisExecutor.isShutdown()) {
                 final Bitmap bmp = rawBitmap;
                 final Face   f   = face;
-                analysisExecutor.execute(() -> computeAndStorePendingEmbedding(bmp, f, rotationDegrees));
+                analysisExecutor.execute(() -> computeEmbeddingAndNavigate(bmp, f, rotationDegrees));
             }
         } else if (state == LivenessDetector.State.FAIL) {
             livenessDetector = new LivenessDetector();
+            livenessStarted  = false;
             lastLivenessMs   = 0;
+            registerPhase    = RegisterPhase.LIVENESS;
+            faceGuideOverlay.setFaceState(FaceGuideOverlayView.FaceState.SEARCHING);
             tvFaceStatus.setText("Süre doldu, tekrar deneyin");
         }
     }
 
-    private void computeAndStorePendingEmbedding(Bitmap rawBitmap, Face face, int rotationDegrees) {
+    private void computeEmbeddingAndNavigate(Bitmap rawBitmap, Face face, int rotationDegrees) {
         Bitmap faceInput = FaceImageProcessor.prepareFaceInput(
                 rawBitmap, rotationDegrees, face.getBoundingBox());
-        if (faceInput == null) return;
+        if (faceInput == null) { runOnUiThread(this::resetLiveness); return; }
 
         float[] embedding = faceNetModel.getEmbedding(faceInput);
-        if (embedding == null) return;
+        if (embedding == null) { runOnUiThread(this::resetLiveness); return; }
 
-        pendingEmbedding = embedding;
-        runOnUiThread(() -> btnRegister.setEnabled(true));
-    }
-
-    // ── Registration ──────────────────────────────────────────────────────────
-
-    private void saveUser(String firstName, String lastName, float[] embedding) {
-        User user = new User(firstName, lastName);
-        user.setFaceEmbedding(UserDao.embeddingToBytes(embedding));
-
-        long rowId = userDao.insertUser(user);
-
+        byte[] embeddingBytes = UserDao.embeddingToBytes(embedding);
         runOnUiThread(() -> {
-            if (rowId > 0) {
-                Log.d(TAG, "Kullanıcı kaydedildi: " + firstName + " " + lastName + " (id=" + rowId + ")");
-                Toast.makeText(this,
-                        firstName + " " + lastName + " başarıyla kaydedildi.", Toast.LENGTH_SHORT).show();
-                finish();
-            } else {
-                Log.e(TAG, "insertUser başarısız.");
-                tvStatus.setText("Kayıt başarısız, tekrar deneyin.");
-                btnRegister.setEnabled(true);
-            }
+            Intent intent = new Intent(this, RegisterInfoActivity.class);
+            intent.putExtra(RegisterInfoActivity.EXTRA_EMBEDDING, embeddingBytes);
+            registerInfoLauncher.launch(intent);
         });
     }
 
     // ── UI helpers ────────────────────────────────────────────────────────────
 
-    private void updateFaceStatus(String text) {
+    private void updateStatus(String text) {
         runOnUiThread(() -> tvFaceStatus.setText(text));
     }
 }

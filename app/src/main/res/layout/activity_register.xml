@@ -4,33 +4,40 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
-    <!-- Name entry -->
+    <!-- Instruction bar -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:background="#CC000000"
         android:orientation="vertical"
-        android:padding="16dp">
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp">
 
-        <EditText
-            android:id="@+id/etFirstName"
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Ad"
-            android:inputType="textPersonName"
-            android:maxLines="1" />
+            android:gravity="center"
+            android:text="YÜZ TARAMASI"
+            android:textColor="#AAFFFFFF"
+            android:textSize="11sp"
+            android:letterSpacing="0.15" />
 
-        <EditText
-            android:id="@+id/etLastName"
+        <TextView
+            android:id="@+id/tvFaceStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="Soyad"
-            android:inputType="textPersonName"
-            android:maxLines="1" />
+            android:layout_marginTop="4dp"
+            android:gravity="center"
+            android:text="Yüzünüzü çerçeveye yerleştirin"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp"
+            android:textStyle="bold" />
 
     </LinearLayout>
 
-    <!-- Camera preview -->
+    <!-- Camera with overlay -->
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -42,40 +49,11 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
-        <TextView
-            android:id="@+id/tvFaceStatus"
+        <com.company.facelogin.views.FaceGuideOverlayView
+            android:id="@+id/faceGuideOverlay"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center"
-            android:padding="8dp"
-            android:text="Yüze bakın"
-            android:textColor="#FFFFFF"
-            android:textSize="16sp" />
+            android:layout_height="match_parent" />
 
     </FrameLayout>
-
-    <!-- Actions -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="16dp">
-
-        <Button
-            android:id="@+id/btnRegister"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:enabled="false"
-            android:text="Kayıt Ol" />
-
-        <TextView
-            android:id="@+id/tvStatus"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:gravity="center"
-            android:textSize="14sp" />
-
-    </LinearLayout>
 
 </LinearLayout>
